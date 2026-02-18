@@ -40,6 +40,17 @@ int main(int argc, const char **argv)
   RCLCPP_INFO_STREAM(node->get_logger(), "Initializing mujoco_ros2_control node...");
   auto model_path = node->get_parameter("mujoco_model_path").as_string();
 
+  // load all plugins from MUJOCO_PLUGIN_PATH environment variable
+  const char* plugin_path = std::getenv("MUJOCO_PLUGIN_PATH");
+  if (plugin_path != nullptr && std::strlen(plugin_path) > 0) {
+    RCLCPP_INFO_STREAM(node->get_logger(), "Loading plugins from: " << plugin_path);
+    // Load plugins with NULL callback to avoid potential segfaults
+    mj_loadAllPluginLibraries(plugin_path, nullptr);
+    RCLCPP_INFO_STREAM(node->get_logger(), "Plugins loaded successfully");
+  } else {
+    RCLCPP_WARN_STREAM(node->get_logger(), "MUJOCO_PLUGIN_PATH not set, plugins will not be loaded");
+  }
+
   // load and compile model
   char error[1000] = "Could not load binary model";
   if (
