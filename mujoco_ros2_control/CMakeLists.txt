@@ -18,7 +18,6 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(controller_manager REQUIRED)
 find_package(joint_limits REQUIRED)
-find_package(urdf REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
@@ -30,7 +29,6 @@ set(THIS_PACKAGE_DEPENDS
   pluginlib
   controller_manager
   joint_limits
-  urdf
   glfw3
   control_toolbox
 )

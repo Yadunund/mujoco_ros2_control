@@ -38,6 +38,11 @@ int main(int argc, const char **argv)
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
 
   RCLCPP_INFO_STREAM(node->get_logger(), "Initializing mujoco_ros2_control node...");
+
+  // Explicitly declare the parameter if not auto-declared
+  if (!node->has_parameter("mujoco_model_path")) {
+    node->declare_parameter<std::string>("mujoco_model_path", "");
+  }
   auto model_path = node->get_parameter("mujoco_model_path").as_string();
 
   // load all plugins from MUJOCO_PLUGIN_PATH environment variable

@@ -153,7 +153,7 @@ hardware_interface::return_type MujocoSystem::write(
 }
 
 bool MujocoSystem::init_sim(
-  mjModel *mujoco_model, mjData *mujoco_data, const urdf::Model &urdf_model,
+  mjModel *mujoco_model, mjData *mujoco_data,
   const hardware_interface::HardwareInfo &hardware_info)
 {
   mj_model_ = mujoco_model;
@@ -161,15 +161,15 @@ bool MujocoSystem::init_sim(
 
   logger_ = rclcpp::get_logger("mujoco_system");
 
-  register_joints(urdf_model, hardware_info);
-  register_sensors(urdf_model, hardware_info);
+  register_joints(hardware_info);
+  register_sensors(hardware_info);
 
   set_initial_pose();
   return true;
 }
 
 void MujocoSystem::register_joints(
-  const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info)
+  const hardware_interface::HardwareInfo &hardware_info)
 {
   joint_states_.resize(hardware_info.joints.size());
 
@@ -194,8 +194,11 @@ void MujocoSystem::register_joints(
     joint_states_.at(joint_index) = joint_state;
     JointState &last_joint_state = joint_states_.at(joint_index);
 
-    // get joint limit from urdf
-    get_joint_limits(urdf_model.getJoint(last_joint_state.name), last_joint_state.joint_limits);
+    // get joint limit from hardware_info
+    auto limits_it = hardware_info.limits.find(last_joint_state.name);
+    if (limits_it != hardware_info.limits.end()) {
+      last_joint_state.joint_limits = limits_it->second;
+    }
 
     // check if mimicked
     if (joint.parameters.find("mimic") != joint.parameters.end())
@@ -336,7 +339,7 @@ void MujocoSystem::register_joints(
 }
 
 void MujocoSystem::register_sensors(
-  const urdf::Model & /* urdf_model */, const hardware_interface::HardwareInfo &hardware_info)
+  const hardware_interface::HardwareInfo &hardware_info)
 {
   // Assuming force/torque sensor end with "_fts" in the name,
   // and IMU sensor end with "_imu" in the name
@@ -494,18 +497,6 @@ void MujocoSystem::set_initial_pose()
   for (auto &joint_state : joint_states_)
   {
     mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position;
-  }
-}
-
-void MujocoSystem::get_joint_limits(
-  urdf::JointConstSharedPtr urdf_joint, joint_limits::JointLimits &joint_limits)
-{
-  if (urdf_joint->limits)
-  {
-    joint_limits.min_position = urdf_joint->limits->lower;
-    joint_limits.max_position = urdf_joint->limits->upper;
-    joint_limits.max_velocity = urdf_joint->limits->velocity;
-    joint_limits.max_effort = urdf_joint->limits->effort;
   }
 }
 

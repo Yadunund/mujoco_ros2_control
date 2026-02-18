@@ -2,4 +2,7 @@
   <class name="mujoco_ros2_control/MujocoSystem" type="mujoco_ros2_control::MujocoSystem" base_class_type="mujoco_ros2_control::MujocoSystemInterface">
     <description>MujocoSystem plugin</description>
   </class>
+  <class name="mujoco_ros2_control/MujocoSystemInterface" type="mujoco_ros2_control::MujocoSystem" base_class_type="mujoco_ros2_control::MujocoSystemInterface">
+    <description>MujocoSystemInterface plugin (alias for MujocoSystem)</description>
+  </class>
 </library>

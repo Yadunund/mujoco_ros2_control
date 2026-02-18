@@ -24,7 +24,6 @@
 #include "hardware_interface/system_interface.hpp"
 #include "mujoco/mujoco.h"
 #include "rclcpp/rclcpp.hpp"
-#include "urdf/model.hpp"
 
 namespace mujoco_ros2_control
 {
@@ -34,7 +33,7 @@ class MujocoSystemInterface : public hardware_interface::SystemInterface
 {
 public:
   virtual bool init_sim(
-    mjModel *mujoco_model, mjData *mujoco_data, const urdf::Model &urdf_model,
+    mjModel *mujoco_model, mjData *mujoco_data,
     const hardware_interface::HardwareInfo &hardware_info) = 0;
 
 protected:

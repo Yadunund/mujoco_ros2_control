@@ -51,7 +51,7 @@ public:
     const rclcpp::Time &time, const rclcpp::Duration &period) override;
 
   bool init_sim(
-    mjModel *mujoco_model, mjData *mujoco_data, const urdf::Model &urdf_model,
+    mjModel *mujoco_model, mjData *mujoco_data,
     const hardware_interface::HardwareInfo &hardware_info) override;
 
   struct JointState
@@ -108,13 +108,9 @@ public:
   };
 
 private:
-  void register_joints(
-    const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info);
-  void register_sensors(
-    const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info);
+  void register_joints(const hardware_interface::HardwareInfo &hardware_info);
+  void register_sensors(const hardware_interface::HardwareInfo &hardware_info);
   void set_initial_pose();
-  void get_joint_limits(
-    urdf::JointConstSharedPtr urdf_joint, joint_limits::JointLimits &joint_limits);
   control_toolbox::Pid get_pid_gains(
     const hardware_interface::ComponentInfo &joint_info, std::string command_interface);
   double clamp(double v, double lo, double hi) { return (v < lo) ? lo : (hi < v) ? hi : v; }

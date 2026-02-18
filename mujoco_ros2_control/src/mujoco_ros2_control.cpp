@@ -52,13 +52,9 @@ std::string MujocoRos2Control::get_robot_description()
   // Getting robot description from parameter first. If not set trying from topic
   std::string robot_description;
 
-  auto node = std::make_shared<rclcpp::Node>(
-    "robot_description_node",
-    rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
-
-  if (node->has_parameter("robot_description"))
+  if (node_->has_parameter("robot_description"))
   {
-    robot_description = node->get_parameter("robot_description").as_string();
+    robot_description = node_->get_parameter("robot_description").as_string();
     return robot_description;
   }
 
@@ -67,7 +63,7 @@ std::string MujocoRos2Control::get_robot_description()
     "Failed to get robot_description from parameter. Will listen on the ~/robot_description "
     "topic...");
 
-  auto robot_description_sub = node->create_subscription<std_msgs::msg::String>(
+  auto robot_description_sub = node_->create_subscription<std_msgs::msg::String>(
     "robot_description", rclcpp::QoS(1).transient_local(),
     [&](const std_msgs::msg::String::SharedPtr msg)
     {
@@ -76,8 +72,8 @@ std::string MujocoRos2Control::get_robot_description()
 
   while (robot_description.empty() && rclcpp::ok())
   {
-    rclcpp::spin_some(node);
-    RCLCPP_INFO(node->get_logger(), "Waiting for robot description message");
+    rclcpp::spin_some(node_);
+    RCLCPP_INFO(node_->get_logger(), "Waiting for robot description message");
     rclcpp::sleep_for(std::chrono::milliseconds(500));
   }
 
@@ -86,26 +82,43 @@ std::string MujocoRos2Control::get_robot_description()
 
 void MujocoRos2Control::init()
 {
+  RCLCPP_INFO(logger_, "MujocoRos2Control::init() started");
   clock_publisher_ = node_->create_publisher<rosgraph_msgs::msg::Clock>("/clock", 10);
+  RCLCPP_INFO(logger_, "Clock publisher created");
 
   std::string urdf_string = this->get_robot_description();
+  RCLCPP_INFO(logger_, "Robot description retrieved, length: %zu", urdf_string.size());
 
   // setup actuators and mechanism control node.
   std::vector<hardware_interface::HardwareInfo> control_hardware_info;
   try
   {
+    RCLCPP_INFO(logger_, "About to parse control resources from URDF");
     control_hardware_info = hardware_interface::parse_control_resources_from_urdf(urdf_string);
+    RCLCPP_INFO(logger_, "Successfully parsed %zu hardware components", control_hardware_info.size());
   }
   catch (const std::runtime_error &ex)
   {
     RCLCPP_ERROR_STREAM(logger_, "Error parsing URDF : " << ex.what());
     return;
   }
+  catch (const std::exception &ex)
+  {
+    RCLCPP_ERROR_STREAM(logger_, "Exception parsing URDF : " << ex.what());
+    return;
+  }
+  catch (...)
+  {
+    RCLCPP_ERROR(logger_, "Unknown exception parsing URDF");
+    return;
+  }
 
   try
   {
+    RCLCPP_INFO(logger_, "Creating hardware interface loader");
     robot_hw_sim_loader_.reset(new pluginlib::ClassLoader<MujocoSystemInterface>(
       "mujoco_ros2_control", "mujoco_ros2_control::MujocoSystemInterface"));
+    RCLCPP_INFO(logger_, "Hardware interface loader created");
   }
   catch (pluginlib::LibraryLoadException &ex)
   {
@@ -113,18 +126,23 @@ void MujocoRos2Control::init()
     return;
   }
 
+  RCLCPP_INFO(logger_, "Creating ResourceManager");
   std::unique_ptr<hardware_interface::ResourceManager> resource_manager =
     std::make_unique<hardware_interface::ResourceManager>(
       node_->get_clock(), logger_);
+  RCLCPP_INFO(logger_, "ResourceManager created");
 
   for (const auto &hardware : control_hardware_info)
   {
-    std::string robot_hw_sim_type_str_ = hardware.type;
+    RCLCPP_INFO(logger_, "Processing hardware: %s", hardware.name.c_str());
+    std::string robot_hw_sim_type_str_ = hardware.hardware_plugin_name;
     std::unique_ptr<MujocoSystemInterface> mujoco_system;
     try
     {
+      RCLCPP_INFO(logger_, "Creating hardware plugin: %s", robot_hw_sim_type_str_.c_str());
       mujoco_system = std::unique_ptr<MujocoSystemInterface>(
         robot_hw_sim_loader_->createUnmanagedInstance(robot_hw_sim_type_str_));
+      RCLCPP_INFO(logger_, "Hardware plugin created");
     }
     catch (pluginlib::PluginlibException &ex)
     {
@@ -132,24 +150,27 @@ void MujocoRos2Control::init()
       continue;
     }
 
-    urdf::Model urdf_model;
-    urdf_model.initString(urdf_string);
-    if (!mujoco_system->init_sim(mj_model_, mj_data_, urdf_model, hardware))
+    RCLCPP_INFO(logger_, "Initializing sim for hardware: %s", hardware.name.c_str());
+    if (!mujoco_system->init_sim(mj_model_, mj_data_, hardware))
     {
       RCLCPP_FATAL(logger_, "Could not initialize robot simulation interface");
       return;
     }
 
+    RCLCPP_INFO(logger_, "Importing component to ResourceManager");
     hardware_interface::HardwareComponentParams params;
     params.hardware_info = hardware;
     params.logger = logger_;
     params.clock = node_->get_clock();
     resource_manager->import_component(std::move(mujoco_system), params);
+    RCLCPP_INFO(logger_, "Component imported");
 
+    RCLCPP_INFO(logger_, "Setting component state to ACTIVE");
     rclcpp_lifecycle::State state(
       lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE,
       hardware_interface::lifecycle_state_names::ACTIVE);
     resource_manager->set_component_state(hardware.name, state);
+    RCLCPP_INFO(logger_, "Component state set to ACTIVE");
   }
 
   // Create the controller manager
