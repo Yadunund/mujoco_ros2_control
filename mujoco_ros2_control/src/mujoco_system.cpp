@@ -110,7 +110,7 @@ hardware_interface::return_type MujocoSystem::write(
       {
         double error = joint_state.position_command - mj_data_->qpos[joint_state.mj_pos_adr];
         mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-          joint_state.position_pid.computeCommand(error, period.nanoseconds());
+          joint_state.position_pid.compute_command(error, period.nanoseconds());
       }
       else
       {
@@ -124,7 +124,7 @@ hardware_interface::return_type MujocoSystem::write(
       {
         double error = joint_state.velocity_command - mj_data_->qvel[joint_state.mj_vel_adr];
         mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-          joint_state.velocity_pid.computeCommand(error, period.nanoseconds());
+          joint_state.velocity_pid.compute_command(error, period.nanoseconds());
         ;
       }
       else
@@ -553,7 +553,7 @@ control_toolbox::Pid MujocoSystem::get_pid_gains(
   }
   else
   {
-    i_max = std::numeric_limits<double>::max();
+    i_max = std::numeric_limits<double>::infinity();
   }
 
   key = command_interface + std::string(PARAM_I_MIN);
@@ -564,10 +564,27 @@ control_toolbox::Pid MujocoSystem::get_pid_gains(
   }
   else
   {
-    i_min = std::numeric_limits<double>::lowest();
+    i_min = -std::numeric_limits<double>::infinity();
   }
 
-  return control_toolbox::Pid(kp, ki, kd, i_max, i_min, enable_anti_windup);
+  control_toolbox::AntiWindupStrategy antiwindup_strategy;
+  antiwindup_strategy.i_max = i_max;
+  antiwindup_strategy.i_min = i_min;
+
+  if (enable_anti_windup)
+  {
+    antiwindup_strategy.type = control_toolbox::AntiWindupStrategy::CONDITIONAL_INTEGRATION;
+  }
+  else
+  {
+    antiwindup_strategy.type = control_toolbox::AntiWindupStrategy::NONE;
+  }
+
+  return control_toolbox::Pid(
+    kp, ki, kd,
+    std::numeric_limits<double>::infinity(),  // u_max (output clamp)
+    -std::numeric_limits<double>::infinity(), // u_min (output clamp)
+    antiwindup_strategy);
 }
 }  // namespace mujoco_ros2_control
 

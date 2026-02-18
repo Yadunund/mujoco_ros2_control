@@ -21,6 +21,7 @@
 #include "hardware_interface/component_parser.hpp"
 #include "hardware_interface/resource_manager.hpp"
 #include "hardware_interface/system_interface.hpp"
+#include "hardware_interface/types/hardware_component_params.hpp"
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
@@ -113,20 +114,12 @@ void MujocoRos2Control::init()
   }
 
   std::unique_ptr<hardware_interface::ResourceManager> resource_manager =
-    std::make_unique<hardware_interface::ResourceManager>();
-
-  try
-  {
-    resource_manager->load_urdf(urdf_string, false, false);
-  }
-  catch (...)
-  {
-    RCLCPP_ERROR(logger_, "Error while initializing URDF!");
-  }
+    std::make_unique<hardware_interface::ResourceManager>(
+      node_->get_clock(), logger_);
 
   for (const auto &hardware : control_hardware_info)
   {
-    std::string robot_hw_sim_type_str_ = hardware.hardware_class_type;
+    std::string robot_hw_sim_type_str_ = hardware.type;
     std::unique_ptr<MujocoSystemInterface> mujoco_system;
     try
     {
@@ -147,7 +140,11 @@ void MujocoRos2Control::init()
       return;
     }
 
-    resource_manager->import_component(std::move(mujoco_system), hardware);
+    hardware_interface::HardwareComponentParams params;
+    params.hardware_info = hardware;
+    params.logger = logger_;
+    params.clock = node_->get_clock();
+    resource_manager->import_component(std::move(mujoco_system), params);
 
     rclcpp_lifecycle::State state(
       lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE,
