@@ -22,16 +22,147 @@
 #include "hardware_interface/resource_manager.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_component_params.hpp"
+#include "hardware_interface/types/resource_manager_params.hpp"
+
+#include "pluginlib/class_loader.hpp"
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
+#include "mujoco_ros2_control/mujoco_system_interface.hpp"
 
 namespace mujoco_ros2_control
 {
+// Custom ResourceManager that loads Mujoco model before initializing hardware
+class MujocoResourceManager : public hardware_interface::ResourceManager
+{
+public:
+  MujocoResourceManager(
+    rclcpp::Node::SharedPtr & node,
+    const rclcpp::Clock::SharedPtr & clock,
+    const rclcpp::Logger & logger,
+    mjModel*& mj_model,
+    mjData*& mj_data)
+  : hardware_interface::ResourceManager(clock, logger),
+    node_(node),
+    logger_(logger),
+    mj_model_(mj_model),
+    mj_data_(mj_data),
+    mj_system_loader_("mujoco_ros2_control", "mujoco_ros2_control::MujocoSystemInterface")
+  {}
+
+  bool load_and_initialize_components(
+    const hardware_interface::ResourceManagerParams & params) override
+  {
+    RCLCPP_INFO(logger_, "MujocoResourceManager::load_and_initialize_components() called");
+
+    // Mark components as being loaded - this sets the initialization flag
+    components_are_loaded_and_initialized_ = true;
+
+    if (params.robot_description.empty())
+    {
+      RCLCPP_ERROR(logger_, "Robot description is empty");
+      components_are_loaded_and_initialized_ = false;
+      return false;
+    }
+
+    RCLCPP_INFO(logger_, "Robot description received, length: %zu", params.robot_description.length());
+
+    // Load Mujoco model if not already loaded
+    if (!mj_model_)
+    {
+      RCLCPP_INFO(logger_, "Loading Mujoco model...");
+      auto model_path = node_->get_parameter("mujoco_model_path").as_string();
+      char error[1000] = "Could not load model";
+
+      if (model_path.size() > 4 && model_path.substr(model_path.size() - 4) == ".mjb")
+      {
+        mj_model_ = mj_loadModel(model_path.c_str(), 0);
+      }
+      else
+      {
+        mj_model_ = mj_loadXML(model_path.c_str(), 0, error, 1000);
+      }
+
+      if (!mj_model_)
+      {
+        RCLCPP_ERROR_STREAM(logger_, "Failed to load Mujoco model: " << error);
+        components_are_loaded_and_initialized_ = false;
+        return false;
+      }
+
+      mj_data_ = mj_makeData(mj_model_);
+      RCLCPP_INFO(logger_, "Mujoco model loaded successfully");
+    }
+    else
+    {
+      RCLCPP_INFO(logger_, "Mujoco model already loaded");
+    }
+
+    // Parse hardware info from URDF
+    RCLCPP_INFO(logger_, "Parsing hardware info from URDF...");
+    const auto hardware_info = hardware_interface::parse_control_resources_from_urdf(params.robot_description);
+    RCLCPP_INFO(logger_, "Found %zu hardware components", hardware_info.size());
+
+    // Load each hardware component
+    for (const auto & individual_hardware_info : hardware_info)
+    {
+      std::string robot_hw_sim_type_str = individual_hardware_info.hardware_plugin_name;
+      RCLCPP_INFO(logger_, "Loading hardware interface: %s", robot_hw_sim_type_str.c_str());
+
+      // Load hardware
+      std::unique_ptr<MujocoSystemInterface> mjSimSystem;
+      try
+      {
+        RCLCPP_INFO(logger_, "Creating plugin instance...");
+        mjSimSystem = std::unique_ptr<MujocoSystemInterface>(
+          mj_system_loader_.createUnmanagedInstance(robot_hw_sim_type_str));
+        RCLCPP_INFO(logger_, "Plugin instance created successfully");
+      }
+      catch (pluginlib::PluginlibException & ex)
+      {
+        RCLCPP_ERROR_STREAM(logger_, "The plugin failed to load. Error: " << ex.what());
+        continue;
+      }
+
+      // Initialize simulation required resource from the hardware info
+      RCLCPP_INFO(logger_, "Initializing simulation interface...");
+      if (!mjSimSystem->init_sim(mj_model_, mj_data_, individual_hardware_info))
+      {
+        RCLCPP_FATAL(logger_, "Could not initialize robot simulation interface");
+        components_are_loaded_and_initialized_ = false;
+        return false;
+      }
+
+      RCLCPP_INFO(logger_, "Initialized hardware interface %s !", robot_hw_sim_type_str.c_str());
+
+      // Import component to resource manager
+      hardware_interface::HardwareComponentParams hw_params;
+      hw_params.hardware_info = individual_hardware_info;
+      hw_params.logger = logger_;
+      hw_params.clock = params.clock;
+      RCLCPP_INFO(logger_, "Importing component to resource manager...");
+      import_component(std::move(mjSimSystem), hw_params);
+      RCLCPP_INFO(logger_, "Component imported successfully");
+    }
+
+    RCLCPP_INFO(logger_, "All hardware components loaded successfully");
+    return true;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Logger logger_;
+  mjModel*& mj_model_;
+  mjData*& mj_data_;
+  pluginlib::ClassLoader<MujocoSystemInterface> mj_system_loader_;
+};
+
 MujocoRos2Control::MujocoRos2Control(
-  rclcpp::Node::SharedPtr &node, mjModel *mujoco_model, mjData *mujoco_data)
+  rclcpp::Node::SharedPtr &node, mjModel *mujoco_model, mjData *mujoco_data,
+  const rclcpp::NodeOptions &cm_node_options)
     : node_(node),
       mj_model_(mujoco_model),
       mj_data_(mujoco_data),
+      cm_node_options_(cm_node_options),
       logger_(rclcpp::get_logger(node_->get_name() + std::string(".mujoco_ros2_control"))),
       control_period_(rclcpp::Duration(1, 0)),
       last_update_sim_time_ros_(0, 0, RCL_ROS_TIME)
@@ -86,98 +217,18 @@ void MujocoRos2Control::init()
   clock_publisher_ = node_->create_publisher<rosgraph_msgs::msg::Clock>("/clock", 10);
   RCLCPP_INFO(logger_, "Clock publisher created");
 
-  std::string urdf_string = this->get_robot_description();
-  RCLCPP_INFO(logger_, "Robot description retrieved, length: %zu", urdf_string.size());
-
-  // setup actuators and mechanism control node.
-  std::vector<hardware_interface::HardwareInfo> control_hardware_info;
-  try
-  {
-    RCLCPP_INFO(logger_, "About to parse control resources from URDF");
-    control_hardware_info = hardware_interface::parse_control_resources_from_urdf(urdf_string);
-    RCLCPP_INFO(logger_, "Successfully parsed %zu hardware components", control_hardware_info.size());
-  }
-  catch (const std::runtime_error &ex)
-  {
-    RCLCPP_ERROR_STREAM(logger_, "Error parsing URDF : " << ex.what());
-    return;
-  }
-  catch (const std::exception &ex)
-  {
-    RCLCPP_ERROR_STREAM(logger_, "Exception parsing URDF : " << ex.what());
-    return;
-  }
-  catch (...)
-  {
-    RCLCPP_ERROR(logger_, "Unknown exception parsing URDF");
-    return;
-  }
-
-  try
-  {
-    RCLCPP_INFO(logger_, "Creating hardware interface loader");
-    robot_hw_sim_loader_.reset(new pluginlib::ClassLoader<MujocoSystemInterface>(
-      "mujoco_ros2_control", "mujoco_ros2_control::MujocoSystemInterface"));
-    RCLCPP_INFO(logger_, "Hardware interface loader created");
-  }
-  catch (pluginlib::LibraryLoadException &ex)
-  {
-    RCLCPP_ERROR_STREAM(logger_, "Failed to create hardware interface loader:  " << ex.what());
-    return;
-  }
-
-  RCLCPP_INFO(logger_, "Creating ResourceManager");
-  std::unique_ptr<hardware_interface::ResourceManager> resource_manager =
-    std::make_unique<hardware_interface::ResourceManager>(
-      node_->get_clock(), logger_);
-  RCLCPP_INFO(logger_, "ResourceManager created");
-
-  for (const auto &hardware : control_hardware_info)
-  {
-    RCLCPP_INFO(logger_, "Processing hardware: %s", hardware.name.c_str());
-    std::string robot_hw_sim_type_str_ = hardware.hardware_plugin_name;
-    std::unique_ptr<MujocoSystemInterface> mujoco_system;
-    try
-    {
-      RCLCPP_INFO(logger_, "Creating hardware plugin: %s", robot_hw_sim_type_str_.c_str());
-      mujoco_system = std::unique_ptr<MujocoSystemInterface>(
-        robot_hw_sim_loader_->createUnmanagedInstance(robot_hw_sim_type_str_));
-      RCLCPP_INFO(logger_, "Hardware plugin created");
-    }
-    catch (pluginlib::PluginlibException &ex)
-    {
-      RCLCPP_ERROR_STREAM(logger_, "The plugin failed to load. Error: " << ex.what());
-      continue;
-    }
-
-    RCLCPP_INFO(logger_, "Initializing sim for hardware: %s", hardware.name.c_str());
-    if (!mujoco_system->init_sim(mj_model_, mj_data_, hardware))
-    {
-      RCLCPP_FATAL(logger_, "Could not initialize robot simulation interface");
-      return;
-    }
-
-    RCLCPP_INFO(logger_, "Importing component to ResourceManager");
-    hardware_interface::HardwareComponentParams params;
-    params.hardware_info = hardware;
-    params.logger = logger_;
-    params.clock = node_->get_clock();
-    resource_manager->import_component(std::move(mujoco_system), params);
-    RCLCPP_INFO(logger_, "Component imported");
-
-    RCLCPP_INFO(logger_, "Setting component state to ACTIVE");
-    rclcpp_lifecycle::State state(
-      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE,
-      hardware_interface::lifecycle_state_names::ACTIVE);
-    resource_manager->set_component_state(hardware.name, state);
-    RCLCPP_INFO(logger_, "Component state set to ACTIVE");
-  }
-
   // Create the controller manager
   RCLCPP_INFO(logger_, "Loading controller_manager");
+
+  RCLCPP_INFO(logger_, "Creating MujocoResourceManager");
+  std::unique_ptr<hardware_interface::ResourceManager> resource_manager =
+    std::make_unique<MujocoResourceManager>(
+      node_, node_->get_clock(), logger_, mj_model_, mj_data_);
+  RCLCPP_INFO(logger_, "MujocoResourceManager created");
+
   cm_executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
   controller_manager_ = std::make_shared<controller_manager::ControllerManager>(
-    std::move(resource_manager), cm_executor_, "controller_manager", node_->get_namespace());
+    std::move(resource_manager), cm_executor_, "controller_manager", node_->get_namespace(), cm_node_options_);
   cm_executor_->add_node(controller_manager_);
 
   if (!controller_manager_->has_parameter("update_rate"))
@@ -190,7 +241,7 @@ void MujocoRos2Control::init()
   control_period_ = rclcpp::Duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / static_cast<double>(update_rate))));
 
-  // Force setting of use_sime_time parameter
+  // Force setting of use_sim_time parameter
   controller_manager_->set_parameter(
     rclcpp::Parameter("use_sim_time", rclcpp::ParameterValue(true)));
 
@@ -203,6 +254,14 @@ void MujocoRos2Control::init()
     }
   };
   cm_thread_ = std::thread(spin);
+
+  // Wait for resource manager to be fully initialized
+  while (!controller_manager_->is_resource_manager_initialized())
+  {
+    RCLCPP_WARN(logger_, "Waiting for ResourceManager to load and initialize hardware...");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  RCLCPP_INFO(logger_, "ResourceManager initialized successfully");
 }
 
 void MujocoRos2Control::update()
