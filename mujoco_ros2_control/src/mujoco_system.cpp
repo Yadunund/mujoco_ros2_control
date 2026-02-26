@@ -76,37 +76,12 @@ hardware_interface::return_type MujocoSystem::write(
     }
   }
   // Joint states
+  // Priority: effort > velocity > position. When a higher-priority interface
+  // is enabled we skip the lower-priority ones so that, e.g., an impedance
+  // controller writing effort commands is not overridden by a stale
+  // position_command that directly sets qpos every timestep.
   for (auto &joint_state : joint_states_)
   {
-    if (joint_state.is_position_control_enabled)
-    {
-      if (joint_state.is_pid_enabled)
-      {
-        double error = joint_state.position_command - mj_data_->qpos[joint_state.mj_pos_adr];
-        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-          joint_state.position_pid.compute_command(error, period.nanoseconds());
-      }
-      else
-      {
-        mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position_command;
-      }
-    }
-
-    if (joint_state.is_velocity_control_enabled)
-    {
-      if (joint_state.is_pid_enabled)
-      {
-        double error = joint_state.velocity_command - mj_data_->qvel[joint_state.mj_vel_adr];
-        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-          joint_state.velocity_pid.compute_command(error, period.nanoseconds());
-        ;
-      }
-      else
-      {
-        mj_data_->qvel[joint_state.mj_vel_adr] = joint_state.velocity_command;
-      }
-    }
-
     if (joint_state.is_effort_control_enabled)
     {
       double min_eff, max_eff;
@@ -121,6 +96,32 @@ hardware_interface::return_type MujocoSystem::write(
 
       mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
         clamp(joint_state.effort_command, min_eff, max_eff);
+    }
+    else if (joint_state.is_velocity_control_enabled)
+    {
+      if (joint_state.is_pid_enabled)
+      {
+        double error = joint_state.velocity_command - mj_data_->qvel[joint_state.mj_vel_adr];
+        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
+          joint_state.velocity_pid.compute_command(error, period.nanoseconds());
+      }
+      else
+      {
+        mj_data_->qvel[joint_state.mj_vel_adr] = joint_state.velocity_command;
+      }
+    }
+    else if (joint_state.is_position_control_enabled)
+    {
+      if (joint_state.is_pid_enabled)
+      {
+        double error = joint_state.position_command - mj_data_->qpos[joint_state.mj_pos_adr];
+        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
+          joint_state.position_pid.compute_command(error, period.nanoseconds());
+      }
+      else
+      {
+        mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position_command;
+      }
     }
   }
   return hardware_interface::return_type::OK;
