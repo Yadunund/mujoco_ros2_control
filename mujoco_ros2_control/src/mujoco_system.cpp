@@ -123,6 +123,15 @@ hardware_interface::return_type MujocoSystem::write(
         mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position_command;
       }
     }
+    else
+    {
+      // No controller has claimed this joint — hold position and zero velocity
+      // to prevent the robot from falling under gravity (equivalent to
+      // gz_ros2_control's hold_joints behavior).
+      mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.hold_position;
+      mj_data_->qvel[joint_state.mj_vel_adr] = 0.0;
+      mj_data_->qfrc_applied[joint_state.mj_vel_adr] = 0.0;
+    }
   }
   return hardware_interface::return_type::OK;
 }
@@ -272,7 +281,7 @@ void MujocoSystem::register_joints(
       {
         command_interfaces_.emplace_back(
           joint.name, hardware_interface::HW_IF_POSITION, &last_joint_state.position_command);
-        last_joint_state.is_position_control_enabled = true;
+        last_joint_state.has_position_interface = true;
         last_joint_state.position_command = last_joint_state.position;
         // TODO(sangteak601): These are not used at all. Potentially can be removed.
         last_joint_state.min_position_command = get_min_value(command_if);
@@ -282,7 +291,7 @@ void MujocoSystem::register_joints(
       {
         command_interfaces_.emplace_back(
           joint.name, hardware_interface::HW_IF_VELOCITY, &last_joint_state.velocity_command);
-        last_joint_state.is_velocity_control_enabled = true;
+        last_joint_state.has_velocity_interface = true;
         last_joint_state.velocity_command = last_joint_state.velocity;
         // TODO(sangteak601): These are not used at all. Potentially can be removed.
         last_joint_state.min_velocity_command = get_min_value(command_if);
@@ -292,7 +301,7 @@ void MujocoSystem::register_joints(
       {
         command_interfaces_.emplace_back(
           joint.name, hardware_interface::HW_IF_EFFORT, &last_joint_state.effort_command);
-        last_joint_state.is_effort_control_enabled = true;
+        last_joint_state.has_effort_interface = true;
         last_joint_state.effort_command = last_joint_state.effort;
         last_joint_state.min_effort_command = get_min_value(command_if);
         last_joint_state.max_effort_command = get_max_value(command_if);
@@ -363,7 +372,50 @@ void MujocoSystem::set_initial_pose()
   for (auto &joint_state : joint_states_)
   {
     mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position;
+    joint_state.hold_position = joint_state.position;
   }
+}
+
+hardware_interface::return_type MujocoSystem::perform_command_mode_switch(
+  const std::vector<std::string> &start_interfaces,
+  const std::vector<std::string> &stop_interfaces)
+{
+  for (auto &joint_state : joint_states_)
+  {
+    for (const auto &interface_name : stop_interfaces)
+    {
+      if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_POSITION)
+      {
+        joint_state.is_position_control_enabled = false;
+      }
+      else if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_VELOCITY)
+      {
+        joint_state.is_velocity_control_enabled = false;
+      }
+      else if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_EFFORT)
+      {
+        joint_state.is_effort_control_enabled = false;
+      }
+    }
+
+    for (const auto &interface_name : start_interfaces)
+    {
+      if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_POSITION)
+      {
+        joint_state.is_position_control_enabled = true;
+      }
+      else if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_VELOCITY)
+      {
+        joint_state.is_velocity_control_enabled = true;
+      }
+      else if (interface_name == joint_state.name + "/" + hardware_interface::HW_IF_EFFORT)
+      {
+        joint_state.is_effort_control_enabled = true;
+      }
+    }
+  }
+
+  return hardware_interface::return_type::OK;
 }
 
 control_toolbox::Pid MujocoSystem::get_pid_gains(

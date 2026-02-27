@@ -51,6 +51,10 @@ public:
   hardware_interface::return_type write(
     const rclcpp::Time &time, const rclcpp::Duration &period) override;
 
+  hardware_interface::return_type perform_command_mode_switch(
+    const std::vector<std::string> &start_interfaces,
+    const std::vector<std::string> &stop_interfaces) override;
+
   bool init_sim(
     mjModel *mujoco_model, mjData *mujoco_data,
     const hardware_interface::HardwareInfo &hardware_info) override;
@@ -72,12 +76,16 @@ public:
     double max_effort_command;
     control_toolbox::Pid position_pid;
     control_toolbox::Pid velocity_pid;
+    bool has_position_interface{false};
+    bool has_velocity_interface{false};
+    bool has_effort_interface{false};
     bool is_position_control_enabled{false};
     bool is_velocity_control_enabled{false};
     bool is_effort_control_enabled{false};
     bool is_pid_enabled{false};
     joint_limits::JointLimits joint_limits;
     bool is_mimic{false};
+    double hold_position{0.0};
     int mimicked_joint_index;
     double mimic_multiplier;
     int mj_joint_type;
