@@ -27,4 +27,8 @@
         <motor joint="camera_joint" ctrlrange="-1 1" gear="100"/>
     </actuator>
 
+    <custom>
+        <text name="depth_cameras" data="camera"/>
+    </custom>
+
 </mujoco>

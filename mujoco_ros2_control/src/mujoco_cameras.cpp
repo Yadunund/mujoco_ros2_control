@@ -20,6 +20,9 @@
 
 #include "mujoco_ros2_control/mujoco_cameras.hpp"
 
+#include <algorithm>
+#include <sstream>
+
 #include "sensor_msgs/image_encodings.hpp"
 
 namespace mujoco_ros2_control
@@ -56,26 +59,32 @@ void MujocoCameras::update(mjModel *mujoco_model, mjData *mujoco_data)
 
     // Copy image into relevant buffers
     mjr_readPixels(
-      camera.image_buffer.data(), camera.depth_buffer.data(), camera.viewport, &mjr_con_);
+      camera.image_buffer.data(),
+      camera.has_depth ? camera.depth_buffer.data() : nullptr,
+      camera.viewport, &mjr_con_);
 
-    // Fix non-linear projections in the depth image and flip the data.
-    // https://github.com/google-deepmind/mujoco/blob/3.2.7/python/mujoco/renderer.py#L190
-    float near = static_cast<float>(mujoco_model->vis.map.znear * mujoco_model->stat.extent);
-    float far = static_cast<float>(mujoco_model->vis.map.zfar * mujoco_model->stat.extent);
-    for (uint32_t h = 0; h < camera.height; h++)
+    if (camera.has_depth)
     {
-      for (uint32_t w = 0; w < camera.width; w++)
+      // Fix non-linear projections in the depth image and flip the data.
+      // https://github.com/google-deepmind/mujoco/blob/3.2.7/python/mujoco/renderer.py#L190
+      float near = static_cast<float>(mujoco_model->vis.map.znear * mujoco_model->stat.extent);
+      float far = static_cast<float>(mujoco_model->vis.map.zfar * mujoco_model->stat.extent);
+      for (uint32_t h = 0; h < camera.height; h++)
       {
-        auto idx = h * camera.width + w;
-        auto idx_flipped = (camera.height - 1 - h) * camera.width + w;
-        camera.depth_buffer[idx] = near / (1.0f - camera.depth_buffer[idx] * (1.0f - near / far));
-        camera.depth_buffer_flipped[idx_flipped] = camera.depth_buffer[idx];
+        for (uint32_t w = 0; w < camera.width; w++)
+        {
+          auto idx = h * camera.width + w;
+          auto idx_flipped = (camera.height - 1 - h) * camera.width + w;
+          camera.depth_buffer[idx] =
+            near / (1.0f - camera.depth_buffer[idx] * (1.0f - near / far));
+          camera.depth_buffer_flipped[idx_flipped] = camera.depth_buffer[idx];
+        }
       }
+      // Copy flipped data into the depth image message, floats -> unsigned chars
+      std::memcpy(
+        &camera.depth_image.data[0], camera.depth_buffer_flipped.data(),
+        camera.depth_image.data.size());
     }
-    // Copy flipped data into the depth image message, floats -> unsigned chars
-    std::memcpy(
-      &camera.depth_image.data[0], camera.depth_buffer_flipped.data(),
-      camera.depth_image.data.size());
 
     // OpenGL's coordinate system's origin is in the bottom left, so we invert the images row-by-row
     auto row_size = camera.width * 3;
@@ -89,12 +98,16 @@ void MujocoCameras::update(mjModel *mujoco_model, mjData *mujoco_data)
     // Publish images and camera info
     auto time = node_->now();
     camera.image.header.stamp = time;
-    camera.depth_image.header.stamp = time;
     camera.camera_info.header.stamp = time;
 
     camera.image_pub->publish(camera.image);
-    camera.depth_image_pub->publish(camera.depth_image);
     camera.camera_info_pub->publish(camera.camera_info);
+
+    if (camera.has_depth)
+    {
+      camera.depth_image.header.stamp = time;
+      camera.depth_image_pub->publish(camera.depth_image);
+    }
   }
 }
 
@@ -106,6 +119,25 @@ void MujocoCameras::close()
 
 void MujocoCameras::register_cameras(const mjModel *mujoco_model)
 {
+  // Parse the "depth_cameras" custom text field from the MJCF model.
+  // In your MJCF XML, add:
+  //   <custom>
+  //     <text name="depth_cameras" data="cam1 cam2 cam3"/>
+  //   </custom>
+  // where the data is a space-separated list of camera names that should publish depth.
+  std::vector<std::string> depth_cameras;
+  int text_id = mj_name2id(mujoco_model, mjOBJ_TEXT, "depth_cameras");
+  if (text_id >= 0)
+  {
+    std::string data(mujoco_model->text_data + mujoco_model->text_adr[text_id]);
+    std::istringstream iss(data);
+    std::string name;
+    while (iss >> name)
+    {
+      depth_cameras.push_back(name);
+    }
+  }
+
   cameras_.resize(0);
   for (auto i = 0; i < mujoco_model->ncam; ++i)
   {
@@ -116,6 +148,11 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
     // Construct CameraData wrapper and set defaults
     CameraData camera;
     camera.name = cam_name;
+    camera.has_depth =
+      std::find(depth_cameras.begin(), depth_cameras.end(), cam_name) != depth_cameras.end();
+    RCLCPP_INFO(
+      node_->get_logger(), "Camera '%s': depth %s", cam_name,
+      camera.has_depth ? "enabled" : "disabled");
     camera.mjv_cam.type = mjCAMERA_FIXED;
     camera.mjv_cam.fixedcamid = i;
     camera.width = static_cast<uint32_t>(cam_resolution[0]);
@@ -128,8 +165,11 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
 
     // Configure publishers
     camera.image_pub = node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/color", 1);
-    camera.depth_image_pub =
-      node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/depth", 1);
+    if (camera.has_depth)
+    {
+      camera.depth_image_pub =
+        node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/depth", 1);
+    }
     camera.camera_info_pub =
       node_->create_publisher<sensor_msgs::msg::CameraInfo>(camera.name + "/camera_info", 1);
 
@@ -144,15 +184,18 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
     camera.image.step = camera.width * 3;
     camera.image.encoding = sensor_msgs::image_encodings::RGB8;
 
-    // Depth image data
-    camera.depth_image.header.frame_id = camera.frame_name;
-    camera.depth_buffer.resize(camera.width * camera.height);
-    camera.depth_buffer_flipped.resize(camera.width * camera.height);
-    camera.depth_image.data.resize(camera.width * camera.height * sizeof(float));
-    camera.depth_image.width = camera.width;
-    camera.depth_image.height = camera.height;
-    camera.depth_image.step = camera.width * sizeof(float);
-    camera.depth_image.encoding = sensor_msgs::image_encodings::TYPE_32FC1;
+    // Depth image data (only allocated when the camera has a depth modality)
+    if (camera.has_depth)
+    {
+      camera.depth_image.header.frame_id = camera.frame_name;
+      camera.depth_buffer.resize(camera.width * camera.height);
+      camera.depth_buffer_flipped.resize(camera.width * camera.height);
+      camera.depth_image.data.resize(camera.width * camera.height * sizeof(float));
+      camera.depth_image.width = camera.width;
+      camera.depth_image.height = camera.height;
+      camera.depth_image.step = camera.width * sizeof(float);
+      camera.depth_image.encoding = sensor_msgs::image_encodings::TYPE_32FC1;
+    }
 
     // Camera info
     camera.camera_info.header.frame_id = camera.frame_name;
