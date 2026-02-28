@@ -44,6 +44,7 @@ struct CameraData
   std::string frame_name;
   uint32_t width;
   uint32_t height;
+  bool has_depth{false};
 
   std::vector<uint8_t> image_buffer;
   std::vector<float> depth_buffer;
