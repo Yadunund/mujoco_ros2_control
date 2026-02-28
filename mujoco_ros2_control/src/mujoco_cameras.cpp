@@ -93,7 +93,7 @@ void MujocoCameras::update(mjModel *mujoco_model, mjData *mujoco_data)
     camera.camera_info.header.stamp = time;
 
     camera.image_pub->publish(camera.image);
-    camera.depth_image_pub->publish(camera.depth_image);
+    // camera.depth_image_pub->publish(camera.depth_image);
     camera.camera_info_pub->publish(camera.camera_info);
   }
 }
@@ -128,8 +128,8 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
 
     // Configure publishers
     camera.image_pub = node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/color", 1);
-    camera.depth_image_pub =
-      node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/depth", 1);
+    // camera.depth_image_pub =
+    //   node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/depth", 1);
     camera.camera_info_pub =
       node_->create_publisher<sensor_msgs::msg::CameraInfo>(camera.name + "/camera_info", 1);
 
