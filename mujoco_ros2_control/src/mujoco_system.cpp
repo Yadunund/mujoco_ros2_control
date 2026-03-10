@@ -42,7 +42,14 @@ hardware_interface::return_type MujocoSystem::read(
   {
     joint_state.position = mj_data_->qpos[joint_state.mj_pos_adr];
     joint_state.velocity = mj_data_->qvel[joint_state.mj_vel_adr];
-    joint_state.effort = mj_data_->qfrc_applied[joint_state.mj_vel_adr];
+    // Report the sum of all generalized forces acting at this DOF:
+    // qfrc_applied (our commanded torque) + qfrc_constraint (contact/limit forces)
+    // + qfrc_passive (passive damping/spring forces, if any).
+    // This better matches Gazebo's JointTransmittedWrench which reports the actual
+    // constraint/reaction force at the joint, not just the commanded torque.
+    joint_state.effort = mj_data_->qfrc_applied[joint_state.mj_vel_adr]
+                       + mj_data_->qfrc_constraint[joint_state.mj_vel_adr]
+                       + mj_data_->qfrc_passive[joint_state.mj_vel_adr];
   }
 
   // IMU Sensor data
