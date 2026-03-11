@@ -42,14 +42,7 @@ hardware_interface::return_type MujocoSystem::read(
   {
     joint_state.position = mj_data_->qpos[joint_state.mj_pos_adr];
     joint_state.velocity = mj_data_->qvel[joint_state.mj_vel_adr];
-    // Report the sum of all generalized forces acting at this DOF:
-    // qfrc_applied (our commanded torque) + qfrc_constraint (contact/limit forces)
-    // + qfrc_passive (passive damping/spring forces, if any).
-    // This better matches Gazebo's JointTransmittedWrench which reports the actual
-    // constraint/reaction force at the joint, not just the commanded torque.
-    joint_state.effort = mj_data_->qfrc_applied[joint_state.mj_vel_adr]
-                       + mj_data_->qfrc_constraint[joint_state.mj_vel_adr]
-                       + mj_data_->qfrc_passive[joint_state.mj_vel_adr];
+    joint_state.effort = mj_data_->qfrc_applied[joint_state.mj_vel_adr];
   }
 
   // IMU Sensor data
@@ -91,18 +84,14 @@ hardware_interface::return_type MujocoSystem::write(
   {
     if (joint_state.is_effort_control_enabled)
     {
-      double min_eff, max_eff;
-      min_eff = joint_state.joint_limits.has_effort_limits
-                  ? -1 * joint_state.joint_limits.max_effort
-                  : std::numeric_limits<double>::lowest();
-      min_eff = std::max(min_eff, joint_state.min_effort_command);
-
-      max_eff = joint_state.joint_limits.has_effort_limits ? joint_state.joint_limits.max_effort
-                                                           : std::numeric_limits<double>::max();
-      max_eff = std::min(max_eff, joint_state.max_effort_command);
-
+      // Skip URDF effort-limit clamping to match Gazebo's behaviour:
+      // Gazebo applies JointForceCmd directly without any clamping,
+      // so we do the same here.  Only honour the explicit min/max
+      // command-interface bounds (which default to ±infinity).
       mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-        clamp(joint_state.effort_command, min_eff, max_eff);
+        clamp(joint_state.effort_command,
+              joint_state.min_effort_command,
+              joint_state.max_effort_command);
     }
     else if (joint_state.is_velocity_control_enabled)
     {
